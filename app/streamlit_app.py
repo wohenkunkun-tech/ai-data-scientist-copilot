@@ -1,3 +1,4 @@
+from datetime import date
 from pathlib import Path
 import sys
 
@@ -8,6 +9,8 @@ ROOT_DIR = Path(__file__).resolve().parents[1]
 sys.path.append(str(ROOT_DIR))
 
 from src.diagnose import diagnose_publishing_rate
+from src.experiment_impact import query_experiment_impact
+from src.external_factors import external_calendar_context
 
 st.set_page_config(page_title="AI Data Scientist Copilot", page_icon="📊", layout="wide")
 
@@ -15,10 +18,13 @@ st.title("AI Data Scientist Copilot")
 st.caption("MVP · 发布率异常诊断 · 本地合成产品事件数据")
 
 question = st.text_input("业务问题", value="为什么昨天发布率下降？")
-target_date = st.date_input("目标日期", value=None, min_value=None, max_value=None)
-
-if target_date is None:
-    target_date = __import__("datetime").date(2026, 8, 31)
+target_date = st.date_input(
+    "目标日期",
+    value=date(2026, 8, 31),
+    min_value=date(2026, 8, 8),
+    max_value=date(2026, 8, 31),
+    help="当前合成数据覆盖 2026-08-01 至 2026-08-31；诊断需要前 7 天基准期，因此可选 2026-08-08 至 2026-08-31。",
+)
 
 if st.button("开始诊断", type="primary"):
     result = diagnose_publishing_rate(str(target_date))
@@ -55,6 +61,33 @@ if st.button("开始诊断", type="primary"):
 建议优先检查该分群的发布漏斗、客户端版本和发布入口曝光。
         """
     )
+
+    st.subheader("实验影响排查")
+    rollouts, ab_results = query_experiment_impact(str(target_date))
+
+    st.markdown("#### 1. 异动期间全量上线实验")
+    if rollouts.empty:
+        st.success("未发现目标日处于全量上线状态的实验。")
+    else:
+        st.warning("发现与异动日期重叠的全量上线实验。需优先核验目标人群、上线时间与漏斗变更。")
+        st.dataframe(rollouts, use_container_width=True, hide_index=True)
+
+    st.markdown("#### 2. 高流量内部 A/B 实验")
+    if ab_results.empty:
+        st.success("未发现目标日活跃的 A/B 实验。")
+    else:
+        ab_display = ab_results.copy()
+        for column in ["control_rate", "treatment_rate"]:
+            ab_display[column] = ab_display[column].map("{:.2%}".format)
+        ab_display["lift_pp"] = ab_display["lift_pp"].map("{:+.2f}pp".format)
+        ab_display["p_value"] = ab_display["p_value"].map("{:.4f}".format)
+        st.dataframe(ab_display, use_container_width=True, hide_index=True)
+        st.caption("判定规则：仅当实验仍在运行、流量较高、实验组相对对照组显著负向（p < 0.05）时，标记为可能影响核心指标。")
+
+    st.subheader("外部因素对齐")
+    st.caption("覆盖当前数据中的 US、BR、JP、GB、DE 法定节假日；学生假期为国家级近似窗口，不能替代州/学区校历。")
+    calendar_context = external_calendar_context(str(target_date), ["US", "BR", "JP", "GB", "DE"])
+    st.dataframe(calendar_context, use_container_width=True, hide_index=True)
 
     with st.expander("查看归因明细"):
         display = result.segment_diagnosis.copy()
