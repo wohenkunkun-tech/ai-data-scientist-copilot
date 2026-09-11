@@ -29,6 +29,38 @@ def _query(query: str, parameters: list[object]) -> pd.DataFrame:
         return connection.execute(query, parameters).fetchdf()
 
 
+def get_publishing_rate(target_date: str) -> float:
+    """Return the deterministic publishing rate for one target date."""
+    result = _query(
+        """
+        SELECT AVG(published::INTEGER) AS publishing_rate
+        FROM read_parquet(?)
+        WHERE event_date = ?
+        """,
+        [str(DATA_PATH), pd.Timestamp(target_date)],
+    )
+    if result.empty or pd.isna(result.loc[0, "publishing_rate"]):
+        raise ValueError(f"No publishing-rate data for {target_date}")
+    return float(result.loc[0, "publishing_rate"])
+
+
+def get_publishing_rate_trend(target_date: str, days: int = 7) -> pd.DataFrame:
+    """Return daily publishing rates for target date and preceding days."""
+    if days < 1:
+        raise ValueError("days must be at least 1")
+    target = pd.Timestamp(target_date)
+    return _query(
+        """
+        SELECT event_date AS date, AVG(published::INTEGER) AS publishing_rate
+        FROM read_parquet(?)
+        WHERE event_date BETWEEN ? AND ?
+        GROUP BY event_date
+        ORDER BY event_date
+        """,
+        [str(DATA_PATH), target - pd.Timedelta(days=days - 1), target],
+    )
+
+
 def diagnose_publishing_rate(target_date: str) -> DiagnosisResult:
     target = pd.Timestamp(target_date)
     baseline_start = target - pd.Timedelta(days=7)
